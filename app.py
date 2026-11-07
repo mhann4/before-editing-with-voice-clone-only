@@ -65,6 +65,21 @@ def get_emotions():
 RECAP_STYLES = get_recap_styles()
 EMOTIONS = get_emotions()
 
+PRESET_CLONE_VOICES = {
+    "RecappianM": {
+        "path": os.path.join("voice_samples", "RecappianM.wav"),
+        "transcript": "ရေနံကုမ္ပဏီတစ်ခုက ရေနံတွင်းတူးနေတုန်း ရေနံကြောဆီမရောက်ခင် မြစ်လို စီးဆင်းနေတဲ့ ရေကြောတစ်ခုကို ရောက်သွားပါတယ်။ ရေရှိရင် ဇီဝဂေဟစနစ်လည်း ရှိတတ်တာ သဘာဝပဲမို့ ရေနံတွင်းထဲကနေ ထူးထူးဆန်းဆန်း သက်ရှိတွေ ထွက်လာပါတယ်။",
+    },
+    "KgSatNg": {
+        "path": os.path.join("voice_samples", "KgSatNgcleaned.wav"),
+        "transcript": "အားလုံးပဲ မင်္ဂလာညချမ်းလေးပါ။ Myanmar Ghost ENT channel ကနေ ပြန်လည်ကြိုဆိုပါတယ်ခင်ဗျာ။ ကျွန်တော် ဒီနေ့ညတော့ စာရေးဆရာ တာတေရဲ့ စိတ်ဝင်စားဖွယ်ရာ ပရလောကဇာတ်လမ်းတွေကို စုစည်းပြီး တာတေပေါင်းချုပ် အပိုင်း 29 အနေနဲ့ ဆက်လက်တင်ဆက်ပေးသွားမှာပဲ ဖြစ်ပါတယ်ခင်ဗျာ။",
+    },
+    "MinMinHtun": {
+        "path": os.path.join("voice_samples", "MinMinHtun.wav"),
+        "transcript": "Real Madrid ကတော့ ကီလီယံ အမ်ဘာပေရဲ့ နှစ်ဂိုးနဲ့ 1-2ဆိုတဲ့ ရလဒ်နဲ့ ကျွန်တော်တို့ ဒါ ဘာစီလိုနာရဲ့ကွင်းမှာ အနိုင်ယူသွားတယ်။",
+    },
+}
+
 st.set_page_config(page_title="Video & Text Processor", layout="wide")
 
 
