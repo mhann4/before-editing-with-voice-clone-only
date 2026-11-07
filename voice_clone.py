@@ -1,14 +1,11 @@
-"""Optional VoxCPM2 voice cloning backend.
-
-The main app can still run with Edge-TTS when the optional GPU dependency is
-not installed. Install requirements-gpu.txt on a CUDA host to enable cloning.
-"""
+"""VoxCPM2 voice-cloning backend and multi-worker remote client."""
 
 from __future__ import annotations
 
 import os
 import subprocess
 import tempfile
+import concurrent.futures
 from functools import lru_cache
 from urllib.parse import urljoin
 
@@ -120,3 +117,54 @@ def generate_remote_voxcpm2(
         except OSError:
             pass
     return output_path
+
+
+def generate_remote_voxcpm2_parallel(
+    paragraphs: list[str],
+    audio_dir: str,
+    reference_audio: str,
+    reference_text: str,
+    workers: list[dict[str, str]],
+    timeout: int = 900,
+    retries: int = 1,
+) -> list[str]:
+    """Generate paragraph WAVs across independent remote VoxCPM2 workers.
+
+    Each worker must point to its own running Colab/API runtime. Results are
+    returned in the original paragraph order even though requests finish at
+    different times.
+    """
+    active_workers = [
+        {"endpoint": w.get("endpoint", "").strip(), "token": w.get("token", "").strip()}
+        for w in workers
+        if w.get("endpoint", "").strip()
+    ]
+    if not active_workers:
+        raise ValueError("At least one VoxCPM2 worker endpoint is required.")
+
+    def run_one(index: int, paragraph: str) -> str:
+        worker = active_workers[index % len(active_workers)]
+        output_path = os.path.join(audio_dir, f"audio_{index}.wav")
+        last_error = None
+        for attempt in range(retries + 1):
+            try:
+                return generate_remote_voxcpm2(
+                    worker["endpoint"], paragraph, reference_audio, reference_text,
+                    output_path, worker["token"], timeout,
+                )
+            except Exception as exc:
+                last_error = exc
+                if attempt < retries:
+                    continue
+        raise RuntimeError(f"Worker {index % len(active_workers) + 1} failed paragraph {index + 1}: {last_error}")
+
+    outputs = [None] * len(paragraphs)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(active_workers)) as executor:
+        futures = {
+            executor.submit(run_one, index, paragraph): index
+            for index, paragraph in enumerate(paragraphs)
+        }
+        for future in concurrent.futures.as_completed(futures):
+            index = futures[future]
+            outputs[index] = future.result()
+    return outputs

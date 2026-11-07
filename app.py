@@ -4,13 +4,15 @@ import subprocess
 import math
 import concurrent.futures
 import asyncio
-import edge_tts
 import time
 import shutil
 import gc
 import threading
 import base64
-from voice_clone import generate_remote_voxcpm2, generate_voxcpm2, voxcpm_available
+from voice_clone import (
+    generate_remote_voxcpm2, generate_remote_voxcpm2_parallel,
+    generate_voxcpm2, voxcpm_available,
+)
 # ─────────────────────────────────────────────
 # Timer Utility
 # ─────────────────────────────────────────────
@@ -26,32 +28,8 @@ def format_time(seconds):
 
 
 # ─────────────────────────────────────────────
-# TTS Voices, Recap Styles, and Emotions
+# VoxCPM2 Voice Clone and Video Settings
 # ─────────────────────────────────────────────
-
-@st.cache_resource
-def get_voices():
-    return [
-        {"id": "v1", "name": "V1 ♂", "gender": "Male"},
-        {"id": "v2", "name": "V2 ♀", "gender": "Female"},
-        {"id": "v3", "name": "V3 ♂", "gender": "Male"},
-        {"id": "v4", "name": "V4 ♂", "gender": "Male"},
-        {"id": "v5", "name": "V5 ♂", "gender": "Male"},
-        {"id": "v6", "name": "V6 ♀", "gender": "Female"},
-        {"id": "v7", "name": "V7 ♂", "gender": "Male"},
-        {"id": "v8", "name": "V8 ♀", "gender": "Female"},
-        {"id": "v9", "name": "V9 ♂", "gender": "Male"},
-        {"id": "v10", "name": "V10 ♀", "gender": "Female"},
-        {"id": "v11", "name": "V11 ♀", "gender": "Female"},
-        {"id": "v12", "name": "V12 ♂", "gender": "Male"},
-        {"id": "v13", "name": "V13 ♀", "gender": "Female"},
-        {"id": "v14", "name": "V14 ♂", "gender": "Male"},
-        {"id": "v15", "name": "V15 ♀", "gender": "Female"},
-        {"id": "v16", "name": "V16 ♀", "gender": "Female"},
-        {"id": "v17", "name": "V17 ♂", "gender": "Male"},
-        {"id": "v18", "name": "V18 ♂", "gender": "Male"},
-        {"id": "v19", "name": "V19 ♀", "gender": "Female"}
-    ]
 
 @st.cache_resource
 def get_recap_styles():
@@ -84,7 +62,6 @@ def get_emotions():
         {"id": "FEAR", "name": "ကြောက်လန့် 😨", "s": 10, "p": 20}
     ]
 
-VOICES = get_voices()
 RECAP_STYLES = get_recap_styles()
 EMOTIONS = get_emotions()
 
@@ -195,148 +172,20 @@ def make_output_basename(uploaded_name):
 # TTS Generation
 # ─────────────────────────────────────────────
 
-async def generate_all_tts(paragraphs, audio_dir, voice_id, speed, pitch,
-                           reference_audio=None, reference_text="", backend_url="", backend_token=""):
-    """Generate TTS for all paragraphs in parallel."""
-    if voice_id == "custom_voxcpm2":
-        if not reference_audio:
-            raise ValueError("Custom voice reference audio is missing.")
-        # Keep VoxCPM2 generation sequential: one GPU model is shared by all
-        # paragraphs and concurrent calls can exhaust VRAM or corrupt output.
-        for i, paragraph in enumerate(paragraphs):
-            output_path = os.path.join(audio_dir, f"audio_{i}.wav")
-            if backend_url.strip():
-                generate_remote_voxcpm2(
-                    backend_url, paragraph, reference_audio, reference_text, output_path, backend_token
-                )
-            else:
-                generate_voxcpm2(paragraph, reference_audio, reference_text, output_path)
+async def generate_all_tts(paragraphs, audio_dir, reference_audio, reference_text, workers):
+    """Generate all VoxCPM2 paragraph WAVs using the configured worker pool."""
+    if workers:
+        generate_remote_voxcpm2_parallel(
+            paragraphs, audio_dir, reference_audio, reference_text, workers,
+        )
         return
-
-    tasks = []
+    if not voxcpm_available():
+        raise RuntimeError("No VoxCPM2 worker is configured and no local CUDA GPU is available.")
     for i, paragraph in enumerate(paragraphs):
-        tasks.append(generate_tts_async(paragraph, os.path.join(audio_dir, f"audio_{i}.mp3"), voice_id, speed, pitch))
-    await asyncio.gather(*tasks)
-
-
-VOICE_MAP = {
-    "v1": "my-MM-ThihaNeural",
-    "v2": "my-MM-NilarNeural",
-    "v3": "it-IT-GiuseppeMultilingualNeural",
-    "v4": "en-AU-WilliamMultilingualNeural",
-    "v5": "en-US-AndrewMultilingualNeural",
-    "v6": "en-US-AvaMultilingualNeural",
-    "v7": "en-US-BrianMultilingualNeural",
-    "v8": "en-US-EmmaMultilingualNeural",
-    "v9": "fr-FR-RemyMultilingualNeural",
-    "v10": "fr-FR-VivienneMultilingualNeural",
-    "v11": "de-DE-SeraphinaMultilingualNeural",
-    "v12": "de-DE-FlorianMultilingualNeural",
-    "v13": "pt-BR-ThalitaMultilingualNeural",
-    "v14": "ko-KR-HyunsuMultilingualNeural",
-    "v15": "en-US-JennyNeural",
-    "v16": "en-US-AriaNeural",
-    "v17": "en-US-GuyNeural",
-    "v18": "en-GB-RyanNeural",
-    "v19": "en-GB-SoniaNeural"
-}
-
-PRESET_CLONE_VOICES = {
-    "RecappianM": {
-        "path": os.path.join("voice_samples", "RecappianM.wav"),
-        "transcript": "ရေနံကုမ္ပဏီတစ်ခုက ရေနံတွင်းတူးနေတုန်း ရေနံကြောဆီမရောက်ခင် မြစ်လို စီးဆင်းနေတဲ့ ရေကြောတစ်ခုကို ရောက်သွားပါတယ်။ ရေရှိရင် ဇီဝဂေဟစနစ်လည်း ရှိတတ်တာ သဘာဝပဲမို့ ရေနံတွင်းထဲကနေ ထူးထူးဆန်းဆန်း သက်ရှိတွေ ထွက်လာပါတယ်။",
-    },
-    "KgSatNg": {
-        "path": os.path.join("voice_samples", "KgSatNgcleaned.wav"),
-        "transcript": "အားလုံးပဲ မင်္ဂလာညချမ်းလေးပါ။ Myanmar Ghost ENT channel ကနေ ပြန်လည်ကြိုဆိုပါတယ်ခင်ဗျာ။ ကျွန်တော် ဒီနေ့ညတော့ စာရေးဆရာ တာတေရဲ့ စိတ်ဝင်စားဖွယ်ရာ ပရလောကဇာတ်လမ်းတွေကို စုစည်းပြီး တာတေပေါင်းချုပ် အပိုင်း 29 အနေနဲ့ ဆက်လက်တင်ဆက်ပေးသွားမှာပဲ ဖြစ်ပါတယ်ခင်ဗျာ။",
-    },
-    "MinMinHtun": {
-        "path": os.path.join("voice_samples", "MinMinHtun.wav"),
-        "transcript": "Real Madrid ကတော့ ကီလီယံ အမ်ဘာပေရဲ့ နှစ်ဂိုးနဲ့ 1-2ဆိုတဲ့ ရလဒ်နဲ့ ကျွန်တော်တို့ ဒါ ဘာစီလိုနာရဲ့ကွင်းမှာ အနိုင်ယူသွားတယ်။",
-    },
-}
-
-ENGLISH_VOICE_IDS = {"v4", "v5", "v6", "v7", "v8", "v15", "v16", "v17", "v18", "v19"}
-ENGLISH_VOICE_LABELS = {
-    "v4": "William (AU)",
-    "v5": "Andrew (US)",
-    "v6": "Ava (US)",
-    "v7": "Brian (US)",
-    "v8": "Emma (US)",
-    "v15": "Jenny (US)",
-    "v16": "Aria (US)",
-    "v17": "Guy (US)",
-    "v18": "Ryan (GB)",
-    "v19": "Sonia (GB)",
-}
-
-MYANMAR_VOICE_IDS = {"v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14"}
-
-MYANMAR_VOICE_LABELS = {
-    "v1": "V1 ♂ Thiha (MM)",
-    "v2": "V2 ♀ Nilar (MM)",
-    "v3": "V3 ♂ Giuseppe (IT)",
-    "v4": "V4 ♂ William (AU)",
-    "v5": "V5 ♂ Andrew (US)",
-    "v6": "V6 ♀ Ava (US)",
-    "v7": "V7 ♂ Brian (US)",
-    "v8": "V8 ♀ Emma (US)",
-    "v9": "V9 ♂ Remy (FR)",
-    "v10": "V10 ♀ Vivienne (FR)",
-    "v11": "V11 ♀ Seraphina (DE)",
-    "v12": "V12 ♂ Florian (DE)",
-    "v13": "V13 ♀ Thalita (PT-BR)",
-    "v14": "V14 ♂ Hyunsu (KO)",
-}
-
-ENGLISH_VOICE_LABELS = {
-    "v4": "William (AU) ♂",
-    "v5": "Andrew (US) ♂",
-    "v6": "Ava (US) ♀",
-    "v7": "Brian (US) ♂",
-    "v8": "Emma (US) ♀",
-    "v15": "Jenny (US) ♀",
-    "v16": "Aria (US) ♀",
-    "v17": "Guy (US) ♂",
-    "v18": "Ryan (GB) ♂",
-    "v19": "Sonia (GB) ♀",
-}
-
-RECAP_STYLE_EN = {
-    "ပုံမှန်အသံ": "Normal",
-    "ကျားကြီး ၁": "Deep Male 1",
-    "ကျားကြီး ၂": "Deep Male 2",
-    "ကျားကြီး ၃": "Deep Male 3",
-    "နီလာ ချွဲသံ": "Soft Voice",
-    "ပေါင်းစပ် ၁၅": "Combo Light",
-    "ပေါင်းစပ် ၃၀": "Combo Medium",
-    "ပေါင်းစပ် ၅၀": "Combo Strong",
-    "အသံသေး ၂၀": "High Pitch Light",
-    "အသံသေး ၅၀": "High Pitch Strong",
-}
-
-EMOTION_EN = {
-    "စိတ်လှုပ်ရှား 🤩": "Exciting 🤩",
-    "တည်ငြိမ် 😌": "Calm 😌",
-    "သတင်း 💼": "News 💼",
-    "ဇာတ်ကြောင်း 📖": "Narrative 📖",
-    "ပျော်ရွှင် 😊": "Happy 😊",
-    "လေးနက် 😠": "Serious 😠",
-    "တီးတိုး 🤫": "Whisper 🤫",
-    "ဝမ်းနည်း 😢": "Sad 😢",
-    "ရွဲ့ပြော 🙄": "Sarcastic 🙄",
-    "ဒေါသထွက် 🤬": "Angry 🤬",
-    "ကြောက်လန့် 😨": "Fear 😨",
-}
-
-async def generate_tts_async(text, output_path, voice_id, speed, pitch):
-    """Async TTS generation for parallel execution."""
-    real_voice = VOICE_MAP.get(voice_id, "my-MM-ThihaNeural")
-    rate_str = f"+{speed}%" if speed >= 0 else f"{speed}%"
-    pitch_str = f"+{pitch}Hz" if pitch >= 0 else f"{pitch}Hz"
-    communicate = edge_tts.Communicate(text, real_voice, rate=rate_str, pitch=pitch_str)
-    await communicate.save(output_path)
-    return output_path
+        generate_voxcpm2(
+            paragraph, reference_audio, reference_text,
+            os.path.join(audio_dir, f"audio_{i}.wav"),
+        )
 
 
 # ─────────────────────────────────────────────
@@ -594,7 +443,7 @@ def merge_videos(video_list, output_path):
 # ─────────────────────────────────────────────
 
 def main():
-    st.title("🎬 Video & Text Processor with TTS")
+    st.title("🎬 Video & Text Processor — VoxCPM2 Voice Clone")
 
     # ─────────────────────────────────────────────
     # Language Toggle
@@ -618,206 +467,68 @@ def main():
     # ─────────────────────────────────────────────
     st.header("⚙️ Settings" if not is_en else "⚙️ Settings")
 
-    # Build voice list based on language
-    if is_en:
-        voice_options = [ENGLISH_VOICE_LABELS[v["id"]] for v in VOICES if v["id"] in ENGLISH_VOICE_IDS]
-    else:
-        voice_options = [MYANMAR_VOICE_LABELS[v["id"]] for v in VOICES if v["id"] in MYANMAR_VOICE_IDS]
-
-    # Build recap style and emotion labels
-    if is_en:
-        style_options = [RECAP_STYLE_EN.get(s["name"], s["name"]) for s in RECAP_STYLES]
-        emotion_options = [EMOTION_EN.get(e["name"], e["name"]) for e in EMOTIONS]
-    else:
-        style_options = [s["name"] for s in RECAP_STYLES]
-        emotion_options = [e["name"] for e in EMOTIONS]
-
     # UI labels
-    label_voice = "Voice" if is_en else "အသံ ရွေးပါ"
-    label_style = "Recap Style" if is_en else "အသံ ဟန်"
-    label_emotion = "Emotion" if is_en else "စိတ်ခံစားမှု"
-    label_preset = "📊 Preset → Speed: {speed}%, Pitch: {pitch}Hz"
-    label_final = "📊 Final → Speed: {speed}%, Pitch: {pitch}Hz"
-    label_speed = "Speed (%)" if is_en else "အမြန်နှုန်း (%)"
-    label_pitch = "Pitch (Hz)" if is_en else "အသံ အနိမ့်အမြင့် (Hz)"
     label_text = "📝 Enter Text" if is_en else "📝 စာသား ထည့်ပါ"
     label_video = "🎥 Upload Video" if is_en else "🎥 ဗီဒီယို တင်ပါ"
     label_start = "🚀 Start Processing" if is_en else "🚀 Processing စတင်ပါ"
     label_info = "📊 Paragraphs: {para} | Characters: {char}"
     label_error = "❌ Provide text and video." if is_en else "❌ စာသား နှင့် ဗီဒီယို ထည့်ပါ။"
 
-    # --- Voice, Recap Style, Emotion: 3-column button grid ---
-
-    # Helper: get voice labels in order
-    def _get_voice_labels():
-        if is_en:
-            return [ENGLISH_VOICE_LABELS[v["id"]] for v in VOICES if v["id"] in ENGLISH_VOICE_IDS]
-        return [MYANMAR_VOICE_LABELS[v["id"]] for v in VOICES if v["id"] in MYANMAR_VOICE_IDS]
-
-    def _get_voice_ids():
-        if is_en:
-            return [v["id"] for v in VOICES if v["id"] in ENGLISH_VOICE_IDS]
-        return [v["id"] for v in VOICES if v["id"] in MYANMAR_VOICE_IDS]
-
-    voice_labels = _get_voice_labels()
-    voice_ids = _get_voice_ids()
-
-    # Initialize selections in session state with defaults
-    if "sel_voice" not in st.session_state:
-        st.session_state.sel_voice = voice_ids[0]
-    if "sel_style" not in st.session_state:
-        st.session_state.sel_style = RECAP_STYLES[0]["id"]
-    if "sel_emotion" not in st.session_state:
-        st.session_state.sel_emotion = EMOTIONS[0]["id"]
-
-    # When language changes, reset selections to defaults
-    lang_key = "en" if is_en else "my"
-    if "sel_voice_lang" not in st.session_state or st.session_state.sel_voice_lang != lang_key:
-        st.session_state.sel_voice = voice_ids[0]
-        st.session_state.sel_voice_lang = lang_key
-
-    # --- Voice Grid ---
-    st.markdown(f"**{label_voice}**")
-    voice_col_count = 3
-    voice_rows = math.ceil(len(voice_labels) / voice_col_count)
-    for row_idx in range(voice_rows):
-        cols = st.columns(voice_col_count)
-        for col_idx in range(voice_col_count):
-            idx = row_idx * voice_col_count + col_idx
-            if idx < len(voice_labels):
-                with cols[col_idx]:
-                    is_selected = (st.session_state.sel_voice == voice_ids[idx])
-                    btn_label = voice_labels[idx]
-                    btn_type = "primary" if is_selected else "secondary"
-                    if st.button(btn_label, key=f"voice_{voice_ids[idx]}", type=btn_type, use_container_width=True):
-                        st.session_state.sel_voice = voice_ids[idx]
-                        st.rerun()
-
-    # --- Optional VoxCPM2 custom voice ---
-    clone_backend_url = get_streamlit_secret("VOXCPM_ENDPOINT")
-    clone_backend_token = get_streamlit_secret("VOXCPM_TOKEN")
-    with st.expander("🧬 Custom Voice Clone (VoxCPM2)" if is_en else "🧬 ကိုယ်ပိုင်အသံ Clone (VoxCPM2)"):
-        st.caption(
-            "Runs on the GPU host where this app is deployed. A 3–10 second reference "
-            "clip and its exact transcript work best."
-            if is_en else
-            "ဒီ feature က app run နေတဲ့ GPU host ပေါ်မှာ VoxCPM2 ကို run ပါမယ်။ "
-            "3–10 စက္ကန့် reference အသံနဲ့ အဲဒီအသံထဲက စာသားအတိအကျကို ထည့်ပါ။"
-        )
-        if not voxcpm_available():
-            st.warning(
-                "VoxCPM2 GPU backend မတွေ့ပါ။ requirements-gpu.txt ကို install လုပ်ပြီး "
-                "CUDA GPU host ပေါ်မှာ app ကို run ပါ။"
-            )
-            clone_backend_url = st.text_input(
-                "Remote Colab VoxCPM2 endpoint (optional)" if is_en else "Remote Colab VoxCPM2 endpoint (optional)",
-                value=clone_backend_url,
-                placeholder="https://your-colab-tunnel.example.com",
-                help="Paste the temporary public URL from the companion Colab backend.",
-                key="clone_backend_url",
-            ).strip()
-            clone_backend_token = st.text_input(
-                "Remote backend token (optional)" if is_en else "Remote backend token (optional)",
-                value=clone_backend_token,
-                type="password",
-                key="clone_backend_token",
-            ).strip()
-            if clone_backend_token:
-                st.caption("Remote endpoint/token loaded from Streamlit Secrets.")
-        preset_clone_name = st.selectbox(
-            "Fixed voice sample" if is_en else "Fix ထည့်ထားတဲ့ voice sample",
-            ["None"] + list(PRESET_CLONE_VOICES.keys()),
-            key="preset_clone_name",
-        )
+    # --- VoxCPM2-only voice configuration ---
+    st.subheader("🎙️ VoxCPM2 Voice Clone" if is_en else "🎙️ VoxCPM2 Voice Clone")
+    st.caption(
+        "This app uses VoxCPM2 only. Configure up to three independent Colab workers; paragraphs are routed round-robin and returned in order."
+        if is_en else
+        "ဒီ app က VoxCPM2 ကိုပဲသုံးပါတယ်။ Colab worker သီးခြား ၃ ခုအထိထည့်နိုင်ပြီး paragraph တွေကို worker အလိုက်ခွဲပို့ကာ အစဉ်အတိုင်း ပြန်စုပေးပါတယ်။"
+    )
+    preset_clone_name = st.selectbox(
+        "Reference voice preset" if is_en else "Reference voice preset",
+        ["Upload my own reference"] + list(PRESET_CLONE_VOICES.keys()),
+        key="preset_clone_name",
+    )
+    clone_reference_audio = None
+    clone_reference_text = ""
+    if preset_clone_name == "Upload my own reference":
         clone_reference_audio = st.file_uploader(
-            "Reference voice (WAV/MP3/FLAC)" if is_en else "Reference အသံ (WAV/MP3/FLAC)",
-            type=["wav", "mp3", "flac", "m4a"],
-            key="clone_reference_audio",
+            "Reference voice (WAV/MP3/FLAC/M4A)" if is_en else "Reference အသံ (WAV/MP3/FLAC/M4A)",
+            type=["wav", "mp3", "flac", "m4a"], key="clone_reference_audio",
         )
         clone_reference_text = st.text_area(
             "Exact words spoken in the reference clip" if is_en else "Reference အသံထဲမှာ ပြောထားတဲ့စာသားအတိအကျ",
-            height=90,
-            key="clone_reference_text",
+            height=90, key="clone_reference_text",
         )
-        use_custom_voice = st.checkbox(
-            "Use this cloned voice for the video" if is_en else "ဒီ clone အသံကို ဗီဒီယိုမှာသုံးမယ်",
-            key="use_custom_voice",
-        )
-        preset_clone_selected = preset_clone_name != "None"
-        custom_voice_active = use_custom_voice or preset_clone_selected
-        if custom_voice_active:
-            if preset_clone_selected:
-                st.success(f"{preset_clone_name} fixed voice ကို ရွေးထားပါတယ်။")
-            elif clone_reference_audio is None:
-                st.info("Reference audio တင်ပြီး checkbox ကို ပြန်ရွေးပါ။")
-            elif not clone_reference_text.strip():
-                st.info("Reference audio ထဲက စာသားအတိအကျ ထည့်ပါ။")
-            else:
-                st.success("Custom VoxCPM2 voice ကို ရွေးထားပါတယ်။")
-                if not voxcpm_available() and not clone_backend_url:
-                    st.error("Local GPU မရှိပါ။ Remote Colab endpoint URL ထည့်ပါ။")
-
-    # --- Recap Style Grid ---
-    st.markdown(f"**{label_style}**")
-    style_labels = [RECAP_STYLE_EN.get(s["name"], s["name"]) if is_en else s["name"] for s in RECAP_STYLES]
-    style_col_count = 3
-    style_rows = math.ceil(len(style_labels) / style_col_count)
-    for row_idx in range(style_rows):
-        cols = st.columns(style_col_count)
-        for col_idx in range(style_col_count):
-            idx = row_idx * style_col_count + col_idx
-            if idx < len(style_labels):
-                with cols[col_idx]:
-                    is_selected = (st.session_state.sel_style == RECAP_STYLES[idx]["id"])
-                    btn_label = style_labels[idx]
-                    btn_type = "primary" if is_selected else "secondary"
-                    if st.button(btn_label, key=f"style_{RECAP_STYLES[idx]['id']}", type=btn_type, use_container_width=True):
-                        st.session_state.sel_style = RECAP_STYLES[idx]["id"]
-                        st.rerun()
-
-    # --- Emotion Grid ---
-    st.markdown(f"**{label_emotion}**")
-    emotion_labels = [EMOTION_EN.get(e["name"], e["name"]) if is_en else e["name"] for e in EMOTIONS]
-    emotion_col_count = 3
-    emotion_rows = math.ceil(len(emotion_labels) / emotion_col_count)
-    for row_idx in range(emotion_rows):
-        cols = st.columns(emotion_col_count)
-        for col_idx in range(emotion_col_count):
-            idx = row_idx * emotion_col_count + col_idx
-            if idx < len(emotion_labels):
-                with cols[col_idx]:
-                    is_selected = (st.session_state.sel_emotion == EMOTIONS[idx]["id"])
-                    btn_label = emotion_labels[idx]
-                    btn_type = "primary" if is_selected else "secondary"
-                    if st.button(btn_label, key=f"emotion_{EMOTIONS[idx]['id']}", type=btn_type, use_container_width=True):
-                        st.session_state.sel_emotion = EMOTIONS[idx]["id"]
-                        st.rerun()
-
-    # Map selected to voice_id, style_data, emotion_data
-    if preset_clone_selected:
-        effective_reference_text = PRESET_CLONE_VOICES[preset_clone_name]["transcript"]
-        effective_reference_upload = None
     else:
-        effective_reference_text = clone_reference_text
-        effective_reference_upload = clone_reference_audio
-    voice_id = "custom_voxcpm2" if custom_voice_active else st.session_state.sel_voice
-    style_data = next((s for s in RECAP_STYLES if s["id"] == st.session_state.sel_style), RECAP_STYLES[0])
-    emotion_data = next((e for e in EMOTIONS if e["id"] == st.session_state.sel_emotion), EMOTIONS[0])
+        preset = PRESET_CLONE_VOICES[preset_clone_name]
+        clone_reference_text = preset["transcript"]
+        st.success(f"{preset_clone_name} reference ကိုအသုံးပြုမယ်။" if not is_en else f"Using the {preset_clone_name} reference.")
 
-    preset_speed = style_data["speed"] + emotion_data["s"]
-    preset_pitch = style_data["pitch"] + emotion_data["p"]
-    st.caption(f"📊 Preset → Speed: {preset_speed}%, Pitch: {preset_pitch}Hz")
+    secret_workers = []
+    for worker_index in range(1, 4):
+        default_endpoint = get_streamlit_secret(f"VOXCPM_ENDPOINT_{worker_index}")
+        default_token = get_streamlit_secret(f"VOXCPM_TOKEN_{worker_index}")
+        with st.expander(f"Colab T4 worker {worker_index}", expanded=(worker_index == 1)):
+            endpoint = st.text_input(
+                "Endpoint URL (no /generate)" if is_en else "Endpoint URL (/generate မထည့်ပါနဲ့)",
+                value=default_endpoint, placeholder="https://xxxxx.trycloudflare.com",
+                key=f"worker_endpoint_{worker_index}",
+            ).strip()
+            token = st.text_input(
+                "Backend token" if is_en else "Backend token",
+                value=default_token, type="password", key=f"worker_token_{worker_index}",
+            ).strip()
+            if endpoint:
+                secret_workers.append({"endpoint": endpoint, "token": token})
+    workers = secret_workers
+    if workers:
+        st.info(f"{len(workers)} VoxCPM2 worker(s) ready. Paragraphs will be distributed round-robin." if is_en else f"{len(workers)} ခု VoxCPM2 worker အဆင်သင့်ဖြစ်ပါပြီ။ Paragraph တွေကို အလှည့်ကျခွဲပို့ပါမယ်။")
 
-    # Row 2: Speed & Pitch Sliders
-    st.markdown("**🎛️ Adjust Speed & Pitch**")
-    slider1, slider2 = st.columns(2)
-    with slider1:
-        final_speed = st.slider(label_speed, min_value=-50, max_value=100, value=preset_speed, step=1)
-    with slider2:
-        final_pitch = st.slider(label_pitch, min_value=-50, max_value=100, value=preset_pitch, step=1)
+    # VoxCPM2 reference selection is complete; continue to text/video inputs.
 
-    st.caption(f"📊 Final → Speed: {final_speed}%, Pitch: {final_pitch}Hz")
-    st.markdown("---")
+    # VoxCPM2 is always the selected voice engine.
+    preset_clone_selected = preset_clone_name != "Upload my own reference"
+    effective_reference_text = clone_reference_text
+    effective_reference_upload = clone_reference_audio
+    voice_id = "voxcpm2"
 
     # Row 3: Text Input & Video Upload
     input_col, video_col = st.columns(2)
@@ -839,22 +550,14 @@ def main():
         if not text_input or not video_file:
             st.error(label_error)
             return
-        if custom_voice_active and (effective_reference_upload is None and not preset_clone_selected):
-            st.error(
-                "Reference audio နဲ့ reference transcript နှစ်ခုလုံးလိုပါတယ်။"
-                if not is_en else
-                "Custom voice requires reference audio and its exact transcript."
-            )
+        if effective_reference_upload is None and not preset_clone_selected:
+            st.error("Reference audio နဲ့ transcript လိုပါတယ်။" if not is_en else "Upload a reference audio and its exact transcript.")
             return
-        if custom_voice_active and not effective_reference_text.strip():
+        if not effective_reference_text.strip():
             st.error("Reference transcript မရှိပါ။" if not is_en else "Reference transcript is missing.")
             return
-        if custom_voice_active and not voxcpm_available() and not clone_backend_url:
-            st.error(
-                "Remote Colab VoxCPM2 endpoint URL ထည့်ပါ။"
-                if not is_en else
-                "Provide the remote Colab VoxCPM2 endpoint URL."
-            )
+        if not workers and not voxcpm_available():
+            st.error("Colab T4 worker URL အနည်းဆုံး ၁ ခုထည့်ပါ။" if not is_en else "Configure at least one Colab T4 worker URL.")
             return
         
         st.session_state.processing_active = True
@@ -863,11 +566,8 @@ def main():
         st.session_state.inputs = {
             "text": text_input,
             "voice_id": voice_id,
-            "final_speed": final_speed,
-            "final_pitch": final_pitch,
-            "reference_text": effective_reference_text if custom_voice_active else "",
-            "backend_url": clone_backend_url if custom_voice_active else "",
-            "backend_token": clone_backend_token if custom_voice_active else "",
+            "reference_text": effective_reference_text,
+            "workers": workers,
 
         }
         st.session_state.output_basename = make_output_basename(video_file.name)
@@ -887,18 +587,16 @@ def main():
             os.makedirs(d, exist_ok=True)
 
         reference_audio_path = None
-        if custom_voice_active:
-            reference_audio_path = os.path.join(st.session_state.dirs["audio"], "voice_reference")
-            if preset_clone_selected:
-                source_path = PRESET_CLONE_VOICES[preset_clone_name]["path"]
-                if not os.path.exists(source_path):
-                    raise FileNotFoundError(f"Preset voice sample not found: {source_path}")
-                shutil.copyfile(source_path, reference_audio_path + ".wav")
-                reference_audio_path += ".wav"
-            else:
-                with open(reference_audio_path, "wb") as f:
-                    f.write(effective_reference_upload.getbuffer())
-            st.session_state.inputs["reference_audio"] = reference_audio_path
+        reference_audio_path = os.path.join(st.session_state.dirs["audio"], "voice_reference.wav")
+        if preset_clone_selected:
+            source_path = PRESET_CLONE_VOICES[preset_clone_name]["path"]
+            if not os.path.exists(source_path):
+                raise FileNotFoundError(f"Preset voice sample not found: {source_path}")
+            shutil.copyfile(source_path, reference_audio_path)
+        else:
+            with open(reference_audio_path, "wb") as f:
+                f.write(effective_reference_upload.getbuffer())
+        st.session_state.inputs["reference_audio"] = reference_audio_path
 
         video_path = os.path.join(st.session_state.dirs["video"], "input_video.mp4")
         st.session_state.video_path = video_path
@@ -935,13 +633,9 @@ def main():
             asyncio.run(generate_all_tts(
                 paragraphs,
                 dirs["audio"],
-                inputs["voice_id"],
-                inputs["final_speed"],
-                inputs["final_pitch"],
-                inputs.get("reference_audio"),
-                inputs.get("reference_text", ""),
-                inputs.get("backend_url", ""),
-                inputs.get("backend_token", ""),
+                inputs["reference_audio"],
+                inputs["reference_text"],
+                inputs.get("workers", []),
             ))
             progress_detail.markdown(f"✅ TTS complete ({num_paragraphs}/{num_paragraphs})")
 
@@ -959,7 +653,7 @@ def main():
             step_status_placeholder.markdown(f"**Step 2/3:** Speed-adjusting {num_paragraphs} segments...")
             step_start = time.time()
             adjusted_segments = [None] * num_paragraphs
-            audio_extension = "wav" if inputs["voice_id"] == "custom_voxcpm2" else "mp3"
+            audio_extension = "wav"
             with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                 futures = {
                     executor.submit(
