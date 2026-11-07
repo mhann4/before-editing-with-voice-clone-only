@@ -496,11 +496,24 @@ def main():
         if is_en else
         "ဒီ app က VoxCPM2 ကိုပဲသုံးပါတယ်။ Colab worker သီးခြား ၃ ခုအထိထည့်နိုင်ပြီး paragraph တွေကို worker အလိုက်ခွဲပို့ကာ အစဉ်အတိုင်း ပြန်စုပေးပါတယ်။"
     )
-    preset_clone_name = st.selectbox(
-        "Reference voice preset" if is_en else "Reference voice preset",
-        ["Upload my own reference"] + list(PRESET_CLONE_VOICES.keys()),
-        key="preset_clone_name",
-    )
+    preset_options = ["Upload my own reference"] + list(PRESET_CLONE_VOICES.keys())
+    if "preset_clone_name" not in st.session_state:
+        st.session_state.preset_clone_name = "KgSatNg"
+    preset_clone_name = st.session_state.preset_clone_name
+    preset_cols = st.columns(2)
+    for preset_index, preset_name in enumerate(preset_options):
+        with preset_cols[preset_index % 2]:
+            selected = preset_clone_name == preset_name
+            button_label = "📤 Upload own reference" if preset_name == "Upload my own reference" else f"🎙️ {preset_name}"
+            if st.button(
+                button_label,
+                key=f"preset_voice_{preset_name}",
+                type="primary" if selected else "secondary",
+                use_container_width=True,
+            ):
+                st.session_state.preset_clone_name = preset_name
+                st.rerun()
+    st.caption(f"Selected reference: {preset_clone_name}")
     clone_reference_audio = None
     clone_reference_text = ""
     if preset_clone_name == "Upload my own reference":
